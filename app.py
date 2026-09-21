@@ -13,7 +13,6 @@ import time
 from collections import Counter
 
 import cv2
-import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -66,13 +65,6 @@ def process(video_path, params, preview_slot, progress, preview_every):
     proc_time = 0.0
     fps_disp = 0.0
 
-    frame_skip = params.get("frame_skip", 1)  
-    proc_scale = params.get("proc_scale", 1.0)  
-    if proc_scale < 1.0:
-        detector.min_area = params["min_area"] * (proc_scale ** 2)
-    last_dets = []
-    mask = None
-
     while True:
         ok, frame = cap.read()
         if not ok:
@@ -80,53 +72,35 @@ def process(video_path, params, preview_slot, progress, preview_every):
         frame_idx += 1
 
         t0 = time.perf_counter()
-        if frame_idx % frame_skip == 0:
-            if proc_scale < 1.0:
-                small = cv2.resize(frame, None, fx=proc_scale, fy=proc_scale,
-                                    interpolation=cv2.INTER_AREA)
-                dets, mask_small, _ = detector.detect(small)
-                inv = 1.0 / proc_scale
-                for d in dets:
-                    x, y, w, h = d["bbox"]
-                    d["bbox"] = (int(round(x * inv)), int(round(y * inv)),
-                                 int(round(w * inv)), int(round(h * inv)))
-                    cx, cy = d["centroid"]
-                    d["centroid"] = (int(round(cx * inv)), int(round(cy * inv)))
-                    d["area"] = d["area"] * inv * inv
-                    d["contour"] = np.round(d["contour"].astype(np.float64) * inv).astype(np.int32)
-                mask = cv2.resize(mask_small, (W, H), interpolation=cv2.INTER_NEAREST)
-                hsv = cv2.cvtColor(cv2.GaussianBlur(frame, (5, 5), 0), cv2.COLOR_BGR2HSV)
-            else:
-                dets, mask, hsv = detector.detect(frame)
-            for d in dets:
-                classify(d, hsv, frame.shape)
-            tracker.update(dets)
-            for d in dets:
-                if tracker.check_line_crossing(d, line_x):
-                    counts[d["label"]] += 1
-                    rows.append({
-                        "timestamp_s": round(frame_idx / fps_src, 3),
-                        "frame": frame_idx,
-                        "id": d["id"],
-                        "shape": d["shape"],
-                        "color": d["color"],
-                        "size": d["size"],
-                        "label": d["label"],
-                        "area_px": int(d["area"]),
-                        "cx": d["centroid"][0],
-                        "cy": d["centroid"][1],
-                        "shape_conf": d["shape_conf"],
-                        "count_total": sum(counts.values()),
-                    })
-            last_dets = dets
-        else:
-            dets = last_dets
+        dets, mask, hsv = detector.detect(frame)
+        for d in dets:
+            classify(d, hsv, frame.shape)
+        tracker.update(dets)
+        for d in dets:
+            if tracker.check_line_crossing(d, line_x):
+                counts[d["label"]] += 1
+                rows.append({
+                    "timestamp_s": round(frame_idx / fps_src, 3),
+                    "frame": frame_idx,
+                    "id": d["id"],
+                    "shape": d["shape"],
+                    "color": d["color"],
+                    "size": d["size"],
+                    "label": d["label"],
+                    "area_px": int(d["area"]),
+                    "cx": d["centroid"][0],
+                    "cy": d["centroid"][1],
+                    "shape_conf": d["shape_conf"],
+                    "count_total": sum(counts.values()),
+                })
         dt = time.perf_counter() - t0
         proc_time += dt
         fps_disp = 0.9 * fps_disp + 0.1 / dt if fps_disp else 1.0 / dt
 
         annotated = draw_overlay(frame, dets, line_x, counts, fps_disp, frame_idx)
         writer.write(annotated)
+
+        # Chỉ đẩy ảnh xem trước mỗi N frame -> đỡ tốn băng thông khi chạy trên server
         if frame_idx % preview_every == 0:
             shown = mask if params["show_mask"] else cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
             preview_slot.image(shown, width="stretch")
@@ -190,22 +164,6 @@ with st.sidebar:
         help="Tăng lên nếu server yếu, để đỡ tốn băng thông đẩy ảnh.",
     )
 
-    st.header("Hiệu năng")
-    frame_skip = st.slider(
-        "Xử lý mỗi N frame", 1, 5, 1,
-        help="1 = xử lý mọi frame (chính xác nhất, chậm nhất). "
-             "2-3 = bỏ bớt frame giữa các lần detect để tăng FPS, "
-             "nhưng dễ mất tracking / bỏ sót đếm nếu vật di chuyển nhanh "
-             "hoặc vạch đếm hẹp. Tune lại nếu số đếm bị lệch.",
-    )
-    proc_scale = st.slider(
-        "Độ phân giải khi detect", 0.3, 1.0, 1.0, step=0.1,
-        help="1.0 = detect trên ảnh gốc (chính xác nhất). Giảm xuống (vd 0.5) "
-             "để detect trên ảnh thu nhỏ rồi quy đổi lại toạ độ — tăng FPS đáng kể "
-             "vì contour/morphology chạy trên ít pixel hơn, nhưng vật rất nhỏ "
-             "có thể bị mất hoặc sai hình dạng nếu thu nhỏ quá tay.",
-    )
-
 run = st.button("Chạy pipeline", icon=":material/play_arrow:", type="primary")
 
 preview_slot = st.empty()
@@ -233,8 +191,6 @@ if run:
         "min_area": min_area,
         "line_ratio": line_ratio,
         "show_mask": show_mask,
-        "frame_skip": frame_skip,
-        "proc_scale": proc_scale,
     }
     with st.spinner("Đang xử lý video..."):
         st.session_state["result"] = process(
