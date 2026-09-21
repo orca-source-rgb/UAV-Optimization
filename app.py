@@ -66,11 +66,9 @@ def process(video_path, params, preview_slot, progress, preview_every):
     proc_time = 0.0
     fps_disp = 0.0
 
-    frame_skip = params.get("frame_skip", 1)  # 1 = xử lý mọi frame; N = xử lý mỗi N frame
-    proc_scale = params.get("proc_scale", 1.0)  # <1.0 = detect trên ảnh thu nhỏ, tăng FPS
+    frame_skip = params.get("frame_skip", 1)  
+    proc_scale = params.get("proc_scale", 1.0)  
     if proc_scale < 1.0:
-        # MIN_AREA được đặt theo pixel ảnh gốc; giữ nguyên khi detect trên ảnh
-        # thu nhỏ sẽ vô tình khắt khe hơn hẳn -> lọc nhầm mất vật nhỏ.
         detector.min_area = params["min_area"] * (proc_scale ** 2)
     last_dets = []
     mask = None
@@ -88,8 +86,6 @@ def process(video_path, params, preview_slot, progress, preview_every):
                                     interpolation=cv2.INTER_AREA)
                 dets, mask_small, _ = detector.detect(small)
                 inv = 1.0 / proc_scale
-                # Scale kết quả detect (tính trên ảnh nhỏ) về đúng toạ độ/diện tích
-                # gốc, để ngưỡng SIZE_SMALL_MAX/MEDIUM_MAX và hue vẫn đúng như cũ.
                 for d in dets:
                     x, y, w, h = d["bbox"]
                     d["bbox"] = (int(round(x * inv)), int(round(y * inv)),
@@ -99,7 +95,6 @@ def process(video_path, params, preview_slot, progress, preview_every):
                     d["area"] = d["area"] * inv * inv
                     d["contour"] = np.round(d["contour"].astype(np.float64) * inv).astype(np.int32)
                 mask = cv2.resize(mask_small, (W, H), interpolation=cv2.INTER_NEAREST)
-                # hue/size cần đọc đúng màu ở ảnh gốc, không dùng hsv của ảnh đã thu nhỏ
                 hsv = cv2.cvtColor(cv2.GaussianBlur(frame, (5, 5), 0), cv2.COLOR_BGR2HSV)
             else:
                 dets, mask, hsv = detector.detect(frame)
@@ -125,7 +120,6 @@ def process(video_path, params, preview_slot, progress, preview_every):
                     })
             last_dets = dets
         else:
-            # Frame bị bỏ qua: không detect lại, dùng kết quả gần nhất để vẽ overlay
             dets = last_dets
         dt = time.perf_counter() - t0
         proc_time += dt
@@ -133,8 +127,6 @@ def process(video_path, params, preview_slot, progress, preview_every):
 
         annotated = draw_overlay(frame, dets, line_x, counts, fps_disp, frame_idx)
         writer.write(annotated)
-
-        # Chỉ đẩy ảnh xem trước mỗi N frame -> đỡ tốn băng thông khi chạy trên server
         if frame_idx % preview_every == 0:
             shown = mask if params["show_mask"] else cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
             preview_slot.image(shown, width="stretch")
